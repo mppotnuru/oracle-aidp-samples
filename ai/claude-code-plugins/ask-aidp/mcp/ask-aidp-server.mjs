@@ -1462,17 +1462,35 @@ function normalizeSpawnTarget(command, args) {
   if (process.platform !== 'win32') return { command, args };
   const lower = command.toLowerCase();
   if (!lower.endsWith('.cmd') && !lower.endsWith('.bat')) return { command, args };
-  return {
-    command: process.env.ComSpec || 'cmd.exe',
-    args: ['/d', '/s', '/c', [quoteWindowsCmdArg(command), ...args.map(quoteWindowsCmdArg)].join(' ')]
-  };
+  // SECURITY: never invoke a .cmd/.bat shim through cmd.exe with interpolated
+  // arguments. cmd.exe's quoting cannot be made safe for a value containing a
+  // double-quote — it terminates the quoted region and drops back to unquoted
+  // parsing where &, |, > become command separators (RCE; CVE-2024-27980 /
+  // "BatBadBut" class). Instead resolve the shim to the Node script it wraps
+  // and spawn Node directly with an argv ARRAY (shell:false), so every
+  // metacharacter — the double-quote included — is passed as inert literal
+  // data. Fail closed if the underlying script can't be resolved.
+  const script = resolveCmdShimToNode(command);
+  if (script) return { command: process.execPath, args: [script, ...args] };
+  throw new Error(
+    `Refusing to execute the aidp CLI via the Windows shim ${command}: arguments ` +
+    `cannot be passed safely through cmd.exe. Point AIDP_CLI_BIN at the aidp Node ` +
+    `entry script (…/aidp-cli/dist/bin/aidp.js) or the platform binary instead.`
+  );
 }
 
-function quoteWindowsCmdArg(value) {
-  const text = String(value);
-  if (text === '') return '""';
-  if (!/[\s"&()<>^|%]/.test(text)) return text;
-  return `"${text.replace(/(["^&|<>()%])/g, '^$1')}"`;
+function resolveCmdShimToNode(cmdPath) {
+  // npm-generated .cmd/.bat shims invoke Node against a wrapped .js entry
+  // (e.g. `"%~dp0\node.exe" "%~dp0\node_modules\aidp-cli\dist\bin\aidp.js" %*`).
+  // Extract that .js path so we can spawn Node directly and bypass cmd.exe.
+  let text;
+  try { text = readFileSync(cmdPath, 'utf8'); } catch { return null; }
+  const dir = path.dirname(cmdPath);
+  const match = text.match(/%~dp0\\?([^\s"'\r\n]*?\.js)/i) || text.match(/([^\s"'\r\n]+\.js)/);
+  if (!match) return null;
+  const raw = match[1].replace(/^%~dp0\\?/i, '').replace(/[\\/]+/g, path.sep);
+  const resolved = path.isAbsolute(raw) ? raw : path.join(dir, raw);
+  return existsSync(resolved) ? resolved : null;
 }
 
 function parseCliJson(result) {
@@ -3906,7 +3924,18 @@ async function handleMessage(message) {
   }
 
   if (message.method === 'tools/call') {
-    const result = await handleToolCall(message.params?.name, message.params?.arguments || {});
+    // A tool that throws a pre-flight error (missing config, missing vendor
+    // dependency, unreadable localPath) should surface as a structured
+    // isError:true RESULT so the model can self-correct — not as a JSON-RPC
+    // -32000 protocol error carrying an internal stack trace with absolute
+    // filesystem paths. Matches the isError handling used for unknown tools
+    // and CLI/HTTP failures elsewhere in the server.
+    let result;
+    try {
+      result = await handleToolCall(message.params?.name, message.params?.arguments || {});
+    } catch (error) {
+      result = toolText(String(error?.message || error), true);
+    }
     jsonResponse(message.id, result);
     return;
   }
