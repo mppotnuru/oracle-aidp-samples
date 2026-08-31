@@ -1480,17 +1480,31 @@ function normalizeSpawnTarget(command, args) {
 }
 
 function resolveCmdShimToNode(cmdPath) {
-  // npm-generated .cmd/.bat shims invoke Node against a wrapped .js entry
-  // (e.g. `"%~dp0\node.exe" "%~dp0\node_modules\aidp-cli\dist\bin\aidp.js" %*`).
-  // Extract that .js path so we can spawn Node directly and bypass cmd.exe.
+  // npm/pnpm/yarn .cmd/.bat shims launch Node against a wrapped .js entry, but
+  // the exact spelling of that path varies by generator/version — all of these
+  // occur in the wild:
+  //   "%~dp0\node_modules\aidp-cli\dist\bin\aidp.js"   (older npm)
+  //   "%dp0%\..\aidp-cli\dist\bin\aidp.js"             (current npm; dp0 var + relative ..)
+  //   "%~dp0../aidp-cli/dist/bin/aidp.js"              (forward slashes)
+  // Extract EVERY .js token, strip the dp0 directory variable, resolve what
+  // remains against the shim's own directory (honouring `..`), and return the
+  // first path that exists. Bypassing cmd.exe entirely is the whole point
+  // (see normalizeSpawnTarget); resolving Node's real entry robustly is what
+  // keeps the normal Windows aidp.cmd install working after that change.
   let text;
   try { text = readFileSync(cmdPath, 'utf8'); } catch { return null; }
   const dir = path.dirname(cmdPath);
-  const match = text.match(/%~dp0\\?([^\s"'\r\n]*?\.js)/i) || text.match(/([^\s"'\r\n]+\.js)/);
-  if (!match) return null;
-  const raw = match[1].replace(/^%~dp0\\?/i, '').replace(/[\\/]+/g, path.sep);
-  const resolved = path.isAbsolute(raw) ? raw : path.join(dir, raw);
-  return existsSync(resolved) ? resolved : null;
+  const tokens = text.match(/[^\s"'\r\n]+\.js\b/gi) || [];
+  for (const token of tokens) {
+    // Strip a leading dp0 directory variable in any of its spellings:
+    // %~dp0 , %dp0% , %dp0  — optionally followed by a path separator.
+    let rel = token.replace(/^%~?dp0%?[\\/]?/i, '');
+    if (rel.includes('%')) continue;             // still carries an unresolved %VAR% — skip
+    rel = rel.replace(/[\\/]+/g, path.sep);
+    const resolved = path.isAbsolute(rel) ? rel : path.resolve(dir, rel);
+    if (existsSync(resolved)) return resolved;
+  }
+  return null;
 }
 
 function parseCliJson(result) {
