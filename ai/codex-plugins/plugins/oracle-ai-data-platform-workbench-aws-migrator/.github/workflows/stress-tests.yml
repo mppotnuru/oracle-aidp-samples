@@ -1,0 +1,99 @@
+name: Offline stress tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  core:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e .
+      - run: PYTHONPATH=. python tests/test_glue_to_spark.py
+      - run: PYTHONPATH=. python tests/test_athena_to_spark_sql.py
+      - run: PYTHONPATH=. python scripts/run_stress_tests.py
+      - run: ./demo.sh
+
+  release-scale:
+    name: Release-scale offline suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - run: PYTHONPATH=. python scripts/run_stress_tests.py --release
+
+  windows-locking:
+    name: Windows state and output locking
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e .
+      - run: python scripts/run_stress_tests.py
+
+  spark-parser:
+    name: Spark SQL parser
+    runs-on: ubuntu-latest
+    env:
+      AIDP_SPARK_VERSION: "3.5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . 'pyspark~=3.5.0'
+      - run: PYTHONPATH=. python -m unittest -v tests.stress.test_spark_runtime
+
+  mcp-parity:
+    name: MCP wrapper parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e '.[mcp]'
+      - run: PYTHONPATH=. python -m unittest -v tests.stress.test_mcp_parity
+
+  wheel-smoke:
+    name: Installed wheel offline demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install build
+      - name: Seed retired namespace in reused build tree
+        run: >-
+          python -c "from pathlib import Path;
+          p=Path('build/lib/fixtures'); p.mkdir(parents=True);
+          (p/'__init__.py').write_text('stale = True\n', encoding='utf-8')"
+      - run: python -m build --wheel
+      - name: Ensure wheel owns no top-level fixtures package
+        run: >-
+          python -c "import glob,zipfile;
+          names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist();
+          assert not any(name.startswith('fixtures/') for name in names), names"
+      - run: python -m venv /tmp/aws-aidp-wheel-venv
+      - run: /tmp/aws-aidp-wheel-venv/bin/pip install dist/*.whl
+      - run: cd /tmp && /tmp/aws-aidp-wheel-venv/bin/aws-aidp inventory --fixture demo -o wheel-inventory.json
+      - run: test -s /tmp/wheel-inventory.json
