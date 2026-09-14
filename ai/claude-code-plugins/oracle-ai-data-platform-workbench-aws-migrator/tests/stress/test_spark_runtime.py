@@ -42,6 +42,98 @@ class SparkRuntimeTests(unittest.TestCase):
             with self.subTest(query=query["name"]):
                 parser.parsePlan(result.translated_sql)
 
+    def test_checked_in_spark_builtin_list_matches_this_runtime(self):
+        """The generated allowlist must match the engine it claims to describe.
+
+        If it drifts, the unknown_function gate starts inventing or missing
+        findings.  Regenerate with scripts/generate_spark_builtins.py.
+        """
+        import re as _re
+
+        from aws_aidp.translate.spark_builtins import SPARK_BUILTINS, SPARK_VERSION
+
+        identifier = _re.compile(r"[a-z_][a-z0-9_]*")
+        live = {
+            row[0].split(".")[-1].lower()
+            for row in self.spark.sql("SHOW FUNCTIONS").collect()
+        }
+        live = {name for name in live if identifier.fullmatch(name)}
+        # CI installs pyspark~=3.5.0, so the patch level floats; the function
+        # registry is stable within a minor release.
+        self.assertEqual(
+            SPARK_VERSION.rsplit(".", 1)[0], self.spark.version.rsplit(".", 1)[0],
+            "spark_builtins.py was generated from a different Spark minor release",
+        )
+        claimed_but_absent = sorted(SPARK_BUILTINS - live)
+        present_but_unlisted = sorted(live - SPARK_BUILTINS)
+        # Names we claim exist but Spark lacks are the dangerous direction:
+        # the gate would wave through a function that fails at runtime.
+        self.assertEqual(claimed_but_absent, [],
+                         "spark_builtins.py lists functions this Spark lacks; "
+                         "rerun scripts/generate_spark_builtins.py")
+        # The reverse only causes over-flagging, but still means the list is stale.
+        self.assertEqual(present_but_unlisted, [],
+                         "this Spark has functions the list is missing; "
+                         "rerun scripts/generate_spark_builtins.py")
+
+    def test_presto_only_syntax_is_genuinely_unparseable_by_spark(self):
+        """Everything gate C rejects must actually fail Spark's parser.
+
+        This is the guard against over-flagging: if Spark ever accepts one of
+        these, the denylist entry is wrong and should be removed.
+        """
+        from aws_aidp.translate.athena_to_spark_sql import _PRESTO_ONLY_SYNTAX
+
+        parser = self.spark._jsparkSession.sessionState().sqlParser()
+        cases = {
+            "WITH RECURSIVE": "WITH RECURSIVE r(n) AS (SELECT 1) SELECT * FROM r",
+            "FETCH FIRST/NEXT": "SELECT * FROM t ORDER BY x FETCH FIRST 5 ROWS WITH TIES",
+            "AT TIME ZONE": "SELECT ts AT TIME ZONE 'UTC' FROM t",
+            "TABLESAMPLE BERNOULLI/SYSTEM": "SELECT * FROM t TABLESAMPLE BERNOULLI(10)",
+            "quantified comparison": "SELECT * FROM t WHERE x > ANY (SELECT y FROM u)",
+            "CAST AS JSON": "SELECT CAST(s AS JSON) FROM t",
+            "CAST AS ROW": "SELECT CAST(r AS ROW(a INT)) FROM t",
+            "PREPARE/EXECUTE/DEALLOCATE": "PREPARE p FROM SELECT * FROM t",
+            "UNLOAD": "UNLOAD (SELECT * FROM t) TO 's3://b/k/' WITH (format='PARQUET')",
+            "CTAS WITH (properties)":
+                "CREATE TABLE foo WITH (format='PARQUET') AS SELECT * FROM t",
+        }
+        # every denylist entry must be exercised here
+        self.assertEqual({label for label, _, _ in _PRESTO_ONLY_SYNTAX}, set(cases))
+
+        for label, sql in cases.items():
+            with self.subTest(construct=label):
+                self.assertTrue(translate(sql).flags, "gate C did not flag it")
+                with self.assertRaises(Exception):
+                    parser.parsePlan(sql)
+
+    def test_functions_flagged_as_unknown_are_genuinely_absent_from_spark(self):
+        """Gate D must only flag names this engine really lacks."""
+        live = {
+            row[0].split(".")[-1].lower()
+            for row in self.spark.sql("SHOW FUNCTIONS").collect()
+        }
+        cases = [
+            "SELECT to_hex(sha256(to_utf8(email))) FROM t",
+            "SELECT geometric_mean(x) FROM t",
+            "SELECT with_timezone(ts, 'UTC') FROM t",
+            "SELECT bitwise_and(a, b) FROM t",
+            "SELECT codepoint(s) FROM t",
+            "SELECT json_size(j, '$.a') FROM t",
+            "SELECT regexp_split(code, ',') FROM t",
+        ]
+        for sql in cases:
+            result = translate(sql)
+            flagged = [
+                f.detail.split("'")[1]
+                for f in result.findings if f.rule == "unknown_function"
+            ]
+            with self.subTest(sql=sql):
+                self.assertTrue(flagged, "gate D did not flag anything")
+                for name in flagged:
+                    self.assertNotIn(name, live,
+                                     f"{name} exists in Spark; gate D is over-flagging")
+
     def test_glue_catalog_identifier_with_hyphens_parses_per_part(self):
         source = (
             'frame = ctx.create_dynamic_frame.from_catalog('

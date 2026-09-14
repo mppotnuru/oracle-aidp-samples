@@ -33,6 +33,8 @@ aws-aidp migrate <plan.json> [--demo] [--filter athena|glue|sagemaker] [-o migra
 ```
 aws-aidp verify <migrated/ | report.json> [--filter athena]
 ```
-- PASS = auto-translated & runnable · REVIEW = has manual-review flags ·
+- PASS = translated, no known issue detected · REVIEW = has manual-review flags ·
   SKIP = translator not implemented yet · FAIL = translation error.
+- PASS is **not execution-verified**: nothing parses or runs the artifact, so a
+  construct no rule covers is reported clean. Review artifacts before running them.
 - Exit code is non-zero only when FAIL > 0.

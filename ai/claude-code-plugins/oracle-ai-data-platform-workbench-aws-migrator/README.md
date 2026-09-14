@@ -114,6 +114,13 @@ AWS credentials: standard boto3 chain (`AWS_PROFILE`, `~/.aws/credentials`, IAM 
 | `migrate` | ✅ Athena → Spark SQL · ✅ Glue ETL → Spark/PySpark | Safe rewrites plus explicit review gates; EMR / SageMaker translators planned |
 | `verify` | ✅ classifies migrate outcomes | Per-asset PASS / REVIEW / SKIP / FAIL |
 
+> **What PASS means.** PASS = *translated, and no known issue was detected*. It is
+> **not execution-verified**: `verify` does not parse or run the generated artifacts,
+> so a construct none of the rules cover is reported clean. Treat PASS as "nothing
+> the tool knows about is wrong here", and review artifacts before running them in
+> production. REVIEW is the honest signal that something needs a human — a low
+> REVIEW count is not by itself evidence of a clean migration.
+
 **Translator coverage today** (Athena → Spark SQL):
 
 | Athena | → | Spark SQL | Type |

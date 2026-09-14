@@ -1,6 +1,11 @@
 """Verify a complete migration report and re-classify each result:
 
 - `ok`                  → PASS  (deterministic translation, no manual flags)
+
+PASS means "no known issue was detected", not "this runs on Spark".  Nothing
+here parses or executes the artifact -- the Athena translator has no parser --
+so a construct no rule covers is reported clean.  The wording in the summary,
+the reports and the docs must not claim more than that.
 - `needs_manual_review` → REVIEW
 - `planned`             → SKIP  (asset type not yet implemented)
 - `error`               → FAIL
@@ -166,6 +171,10 @@ def format_verify(result: dict) -> str:
         f"  REVIEW: {s['REVIEW']}",
         f"  SKIP:   {s['SKIP']}",
         f"  FAIL:   {s['FAIL']}",
+        "",
+        "  PASS = translated, no known issue detected -- not execution-verified.",
+        "         Nothing parses or runs the artifact, so a construct no rule",
+        "         covers is reported clean. Review before running in production.",
         "",
         "per-asset:",
     ]

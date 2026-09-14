@@ -461,14 +461,24 @@ class AthenaCorpusTests(unittest.TestCase):
             r"SELECT regexp_replace(code, '\d+', '') FROM t",
             r"SELECT regexp_extract(code, '([A-Z]+)-(\d+)', 2) FROM t",
             r"SELECT regexp_extract_all(code, '\w+') FROM t",
+            # `regexp_split` is not a Spark 3.5 built-in (Spark spells it
+            # `split`), so the output-validation gate correctly adds a second,
+            # unrelated finding here.  The escape rule must still fire once.
             r"SELECT regexp_split(code, '\s+') FROM t",
         ]
         for source in cases:
             with self.subTest(source=source):
                 result = translate(source)
                 self.assertEqual(result.translated_sql, source)
-                self.assertEqual(result.flags, 1, [str(f) for f in result.findings])
-                self.assertEqual(result.findings[0].rule, "regex_escape_sequence")
+                escape_flags = [f for f in result.findings
+                                if f.rule == "regex_escape_sequence"]
+                self.assertEqual(len(escape_flags), 1,
+                                 [str(f) for f in result.findings])
+                self.assertEqual(
+                    {f.rule for f in result.findings} - {"regex_escape_sequence"},
+                    {"unknown_function"} if "regexp_split" in source else set(),
+                    [str(f) for f in result.findings],
+                )
 
     def test_regex_without_backslash_is_not_flagged_for_escapes(self):
         result = translate("SELECT regexp_replace(code, '[0-9]+', ''), regexp_extract(code, '([A-Z]+)', 1) FROM t")
