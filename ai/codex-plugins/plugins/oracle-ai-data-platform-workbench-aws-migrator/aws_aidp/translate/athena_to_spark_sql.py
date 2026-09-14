@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+from aws_aidp.translate.spark_builtins import SPARK_BUILTINS, SPARK_VERSION
 from typing import Iterable
 
 
@@ -1222,9 +1224,407 @@ _RULES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Output validation gates
+#
+# The rules above only speak up about constructs they were written for, so
+# "no rule matched" is not the same claim as "this is runnable Spark SQL".
+# Without the gates below the translator reports unrecognised input as a clean
+# PASS -- an earlier sqlglot-based version got input validation for free
+# because it had to parse the query to translate it at all.
+#
+# These mirror the three checks glue_to_spark.translate() already performs
+# (input shape, residual AWS paths, output validity).  They only ever append
+# flags; no rewrite is applied and no SQL is altered here.
+# ---------------------------------------------------------------------------
+
+# Leading keywords that begin a statement we are willing to hand to Spark.
+# Athena-only statement verbs are listed too, so gate C can give them a
+# specific message instead of the generic "unrecognised" one.
+_STATEMENT_KEYWORDS = frozenset({
+    "select", "with", "insert", "update", "delete", "merge", "values", "table",
+    "create", "alter", "drop", "truncate", "show", "describe", "desc", "explain",
+    "msck", "repair", "refresh", "analyze", "cache", "uncache", "set", "reset",
+    "use", "grant", "revoke", "call", "comment", "add", "list",
+    # Athena / Trino statement verbs -- recognised, then flagged by gate C.
+    "prepare", "execute", "deallocate", "unload",
+})
+
+# Constructs Spark's parser rejects outright.  Every entry was executed
+# against Spark 3.5.9 and observed to raise PARSE_SYNTAX_ERROR or equivalent.
+_PRESTO_ONLY_SYNTAX: tuple[tuple[str, "re.Pattern[str]", str], ...] = (
+    ("WITH RECURSIVE", re.compile(r"\bWITH\s+RECURSIVE\b", re.IGNORECASE),
+     "Spark 3.5 has no recursive CTE"),
+    ("FETCH FIRST/NEXT", re.compile(r"\bFETCH\s+(?:FIRST|NEXT)\b", re.IGNORECASE),
+     "use LIMIT; Spark has no FETCH clause and no WITH TIES"),
+    ("AT TIME ZONE", re.compile(r"\bAT\s+TIME\s+ZONE\b", re.IGNORECASE),
+     "use from_utc_timestamp/to_utc_timestamp"),
+    ("TABLESAMPLE BERNOULLI/SYSTEM",
+     re.compile(r"\bTABLESAMPLE\s+(?:BERNOULLI|SYSTEM|POISSONIZED)\b", re.IGNORECASE),
+     "Spark supports TABLESAMPLE (n PERCENT | n ROWS) only"),
+    ("quantified comparison",
+     re.compile(r"(?:[<>]=?|<>|!=|=)\s*(?:ANY|SOME|ALL)\s*\(", re.IGNORECASE),
+     "Spark has no > ANY/ALL (subquery); rewrite as a join or aggregate"),
+    ("CAST AS JSON", re.compile(r"\bAS\s+JSON\s*\)", re.IGNORECASE),
+     "Spark has no JSON data type"),
+    ("CAST AS ROW", re.compile(r"\bAS\s+ROW\s*\(", re.IGNORECASE),
+     "use Spark's STRUCT<...> type"),
+    ("PREPARE/EXECUTE/DEALLOCATE",
+     re.compile(r"^\s*(?:PREPARE|EXECUTE|DEALLOCATE)\b", re.IGNORECASE),
+     "Athena prepared statements have no Spark equivalent"),
+    ("UNLOAD", re.compile(r"^\s*UNLOAD\b", re.IGNORECASE),
+     "use a Spark write instead"),
+    ("CTAS WITH (properties)",
+     re.compile(r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:EXTERNAL\s+)?TABLE\b[^;]*?\bWITH\s*\(",
+                re.IGNORECASE),
+     "use Spark's USING/TBLPROPERTIES/LOCATION clauses"),
+)
+
+_CALL_CANDIDATE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+# `WITH name AS (` / `, name(cols) AS (` -- common-table-expression names.
+_CTE_NAME = re.compile(
+    r"(?:\bWITH\b|,)\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\([^()]*\))?\s+AS\s*\(",
+    re.IGNORECASE,
+)
+_S3_SCHEME = re.compile(r"\bs3[an]?://", re.IGNORECASE)
+
+# `CREATE TABLE foo (a INT)` / `INSERT INTO db.target (id) ...` -- the
+# parenthesis after a table or view name opens a column list, not an argument
+# list, so the identifier in front of it is not a function call.
+_IDENT = r"(?:[A-Za-z_][A-Za-z0-9_]*|`[^`]*`)"
+_TABLE_NAME_PARENS = re.compile(
+    rf"\b(?:TABLE|VIEW|INTO)\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    rf"{_IDENT}(?:\s*\.\s*{_IDENT})*\s*\(",
+    re.IGNORECASE,
+)
+
+# Valid Spark SQL, but grammar productions rather than registry entries, so
+# they never appear in SHOW FUNCTIONS.
+_SPARK_SYNTAX_FUNCTIONS = frozenset({"try_cast"})
+
+# Reserved words that can legally be followed by "(" without being a call.
+# Only words absent from SPARK_BUILTINS need listing; `if`, `case`, `in`,
+# `array`, `map`, `struct`, `cast`, `filter` and friends are real builtins.
+# `row` is deliberately NOT excluded: Spark has no ROW(...) constructor, so
+# flagging it is correct.
+_NON_FUNCTION_KEYWORDS = frozenset({
+    "all", "alter", "as", "by", "create", "cross", "distinct", "drop", "from",
+    "full", "group", "having", "inner", "insert", "interval", "into", "is",
+    "join", "lateral", "null", "on", "order", "outer", "partition", "recursive",
+    "returns", "rows", "select", "table", "tablesample", "true", "false",
+    "union", "use", "using", "values", "varchar", "where", "with", "over",
+    # DDL clause keywords that take a parenthesised list
+    "columns", "tblproperties", "options", "serdeproperties", "properties",
+})
+
+# A statement cannot end on a binary operator or conjunction.  Unlike clause
+# adjacency this is decidable without a parser: Spark 3.5 reserves none of its
+# clause keywords by default (`SELECT * FROM t WHERE group = 1` is valid, with
+# `group` an ordinary column), so keyword position proves nothing -- but no
+# valid statement ends on a dangling operator.
+_DANGLING_TAIL = frozenset({
+    "=", "==", "!=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "%",
+    "||", "&", "|", "^", "~",
+    "and", "or", "not", "like", "rlike", "ilike", "in", "is", "between",
+    "div", "mod",
+})
+_BY_CLAUSES = frozenset({"order", "group", "sort", "cluster", "distribute", "partition"})
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|<=>|<>|!=|<=|>=|==|\|\||\S")
+
+
+def _statement_segments(sql: str, mask: str) -> list[str]:
+    """Split on semicolons that sit in code, not in a literal or comment."""
+    segments: list[str] = []
+    start = 0
+    for index, char in enumerate(mask):
+        if char == ";":
+            if mask[start:index].strip():
+                segments.append(sql[start:index])
+            start = index + 1
+    if mask[start:].strip():
+        segments.append(sql[start:])
+    return segments
+
+
+def _has_unterminated_quote(sql: str) -> bool:
+    index = 0
+    while index < len(sql):
+        if sql.startswith("--", index):
+            end = sql.find("\n", index)
+            index = len(sql) if end < 0 else end
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end < 0:
+                return False        # unterminated comment; not this gate's job
+            index = end + 2
+            continue
+        char = sql[index]
+        if char in ("'", '"', "`"):
+            index += 1
+            closed = False
+            while index < len(sql):
+                if sql[index] == char:
+                    if index + 1 < len(sql) and sql[index + 1] == char:
+                        index += 2
+                        continue
+                    index += 1
+                    closed = True
+                    break
+                index += 1
+            if not closed:
+                return True
+            continue
+        index += 1
+    return False
+
+
+def _comment_free(sql: str) -> str:
+    """Blank comments but keep string literals: an s3:// path lives in one."""
+    chars = list(sql)
+    index = 0
+    while index < len(sql):
+        if sql.startswith("--", index):
+            end = sql.find("\n", index)
+            end = len(sql) if end < 0 else end
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            end = len(sql) if end < 0 else end + 2
+        else:
+            index += 1
+            continue
+        for pos in range(index, end):
+            if chars[pos] != "\n":
+                chars[pos] = " "
+        index = end
+    return "".join(chars)
+
+
+def _paren_imbalance(mask: str) -> str | None:
+    """Describe a parenthesis problem, checking order as well as totals.
+
+    Counting alone is not enough: ``SELECT )(`` has one of each but Spark
+    rejects it, so depth must never go negative either.
+    """
+    depth = 0
+    for index, char in enumerate(mask):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0:
+                return (f"a closing parenthesis at offset {index} has no matching "
+                        "opening parenthesis")
+    if depth > 0:
+        noun = "parenthesis is" if depth == 1 else "parentheses are"
+        return f"{depth} {noun} never closed"
+    return None
+
+
+def _clause_mask(sql: str) -> str:
+    """Mask comments away but collapse quoted spans to a placeholder word.
+
+    _masked_sql blanks literals to spaces, which is right for the rewrite
+    rules but wrong here: the clause check counts tokens, so a blanked
+    literal would make ``SELECT 'x' FROM t`` look like an empty projection.
+    """
+    chars = list(sql)
+    index = 0
+    while index < len(sql):
+        if sql.startswith("--", index):
+            end = sql.find("\n", index)
+            end = len(sql) if end < 0 else end
+            for pos in range(index, end):
+                chars[pos] = " "
+            index = end
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            end = len(sql) if end < 0 else end + 2
+            for pos in range(index, end):
+                if chars[pos] != "\n":
+                    chars[pos] = " "
+            index = end
+            continue
+        if sql[index] in ("'", '"', "`"):
+            quote = sql[index]
+            start = index
+            index += 1
+            while index < len(sql):
+                if sql[index] == quote:
+                    if index + 1 < len(sql) and sql[index + 1] == quote:
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            for pos in range(start, index):
+                if chars[pos] != "\n":
+                    chars[pos] = "a"
+            continue
+        index += 1
+    return "".join(chars)
+
+
+def _dangling_tail(mask: str) -> str | None:
+    """Flag a statement that ends on an operator, so its expression is cut off.
+
+    Deliberately narrow.  An earlier version of this check looked at clause
+    adjacency ("does a clause keyword follow SELECT?") and had to be removed:
+    Spark 3.5's default parser reserves none of its clause keywords, so
+    ``SELECT * FROM t WHERE group = 1`` is a valid query over a column named
+    ``group``.  Keyword position therefore proves nothing, and every
+    adjacency rule produced false REVIEWs on valid SQL.  A trailing operator
+    is the part that stays decidable.
+    """
+    tokens = _TOKEN.findall(mask)
+    if not tokens:
+        return None
+    last = tokens[-1].lower()
+    if last in _DANGLING_TAIL:
+        return f"the statement ends on {tokens[-1]!r}, so its expression is incomplete"
+    if last == ",":
+        return "the statement ends on a comma, so the list is unfinished"
+    # A two-word BY clause is unambiguous.  A *lone* trailing keyword is not:
+    # Spark rereads `SELECT a FROM` as `SELECT a AS from` and `... t WHERE` as
+    # `... t AS where`, both of which parse, so only the paired form is safe
+    # to flag.
+    if last == "by" and len(tokens) >= 2 and tokens[-2].lower() in _BY_CLAUSES:
+        return (f"the statement ends on {tokens[-2].upper()} BY "
+                "with nothing to sort or group by")
+    return None
+
+
+def _leading_keyword(mask: str) -> str | None:
+    stripped = mask.lstrip()
+    if not stripped:
+        return None
+    match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", stripped)
+    return match.group(0).lower() if match else None
+
+
+def _already_reported(name: str, findings: list[Finding]) -> bool:
+    """Has a specific rule already spoken for this function?
+
+    The targeted rules name the Spark equivalent ("use weekday()+1"), so they
+    are strictly more useful than the generic gate.  One construct must
+    produce one finding, so the gate stands down where a rule already fired.
+    """
+    for finding in findings:
+        rule = finding.rule
+        if name == rule or rule.startswith(f"{name}_") or name.startswith(f"{rule}_"):
+            return True
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                     finding.detail, re.IGNORECASE):
+            return True
+    return False
+
+
+def _unknown_functions(mask: str, findings: list[Finding] | None = None) -> list[str]:
+    cte_names = {m.group(1).lower() for m in _CTE_NAME.finditer(mask)}
+    # Offsets of "(" that open a column list rather than an argument list.
+    column_list_parens = {m.end() - 1 for m in _TABLE_NAME_PARENS.finditer(mask)}
+    unknown: list[str] = []
+    for match in _CALL_CANDIDATE.finditer(mask):
+        name = match.group(1).lower()
+        if match.end() - 1 in column_list_parens:
+            continue
+        if name in SPARK_BUILTINS or name in _SPARK_SYNTAX_FUNCTIONS:
+            continue
+        if name in _NON_FUNCTION_KEYWORDS or name in cte_names:
+            continue
+        # `... AS t(signal)` is a table alias with a column list, not a call.
+        prefix = mask[:match.start(1)].rstrip()
+        if re.search(r"(?:^|[^A-Za-z0-9_])AS$", prefix, re.IGNORECASE):
+            continue
+        if findings is not None and _already_reported(name, findings):
+            continue
+        if name not in unknown:
+            unknown.append(name)
+    return unknown
+
+
+def _validate(sql: str, findings: list[Finding]) -> None:
+    """Inspect the translated SQL and flag anything Spark could not run."""
+    mask = _masked_sql(sql)
+
+    # Gate A -- Spark executes one statement per call.
+    segments = _statement_segments(sql, mask)
+    if len(segments) > 1:
+        findings.append(Finding(
+            "multi_statement",
+            f"input holds {len(segments)} statements; Spark executes one statement "
+            "per call -- split these into separate saved queries",
+            "flag",
+        ))
+
+    # Gate B -- does this look like a SQL statement at all?
+    keyword = _leading_keyword(mask)
+    if keyword is None or keyword not in _STATEMENT_KEYWORDS:
+        shown = keyword if keyword else (sql.strip()[:20] or "empty input")
+        findings.append(Finding(
+            "statement_not_recognized",
+            f"does not begin with a recognised SQL statement keyword (found {shown!r}); "
+            "Spark's parser would reject this",
+            "flag",
+        ))
+    if _has_unterminated_quote(sql):
+        findings.append(Finding(
+            "statement_unbalanced",
+            "a quoted literal or identifier is never closed; Spark's parser would reject this",
+            "flag",
+        ))
+    else:
+        imbalance = _paren_imbalance(mask)
+        if imbalance:
+            findings.append(Finding(
+                "statement_unbalanced",
+                f"{imbalance}; Spark's parser would reject this",
+                "flag",
+            ))
+        dangling = _dangling_tail(_clause_mask(sql))
+        if dangling:
+            findings.append(Finding(
+                "statement_incomplete",
+                f"{dangling}; Spark's parser would reject this",
+                "flag",
+            ))
+
+    # Gate C -- grammar Spark rejects outright.
+    for label, pattern, hint in _PRESTO_ONLY_SYNTAX:
+        if pattern.search(mask):
+            findings.append(Finding(
+                "presto_only_syntax",
+                f"{label} is Athena/Trino-only and Spark 3.5 cannot parse it -- {hint}",
+                "flag",
+            ))
+
+    # Gate D -- the function has to exist in Spark.
+    for name in _unknown_functions(mask, findings):
+        findings.append(Finding(
+            "unknown_function",
+            f"{name!r} is not a Spark {SPARK_VERSION} built-in and no equivalent was "
+            "applied; the job would fail with UNRESOLVED_ROUTINE",
+            "flag",
+        ))
+
+    # Gate E -- a migrated query must not still point at AWS.
+    residual = _S3_SCHEME.findall(_comment_free(sql))
+    if residual:
+        first = _S3_SCHEME.search(_comment_free(sql))
+        context = _comment_free(sql)[first.start():first.start() + 60].strip()
+        findings.append(Finding(
+            "s3_path_unhandled",
+            f"{len(residual)} AWS object-storage path(s) remain after translation "
+            f"(first: {context!r}); point these at OCI Object Storage",
+            "flag",
+        ))
+
+
 def translate(sql: str) -> TranslationResult:
     findings: list[Finding] = []
     out = sql
     for rule in _RULES:
         out = rule(out, findings)
+    _validate(out, findings)
     return TranslationResult(source_sql=sql, translated_sql=out, findings=findings)

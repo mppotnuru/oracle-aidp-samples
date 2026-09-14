@@ -316,7 +316,7 @@ def _migrate_s3_demo(asset: dict, out_dir: Path, ns: str, used_paths: set[Path])
     )
     sh_path = _artifact_path(out_dir, "transfer", bucket, ".transfer.sh", asset["id"], used_paths)
     sh_path.parent.mkdir(parents=True, exist_ok=True)
-    sh_path.write_text(res.translated_sql)
+    sh_path.write_text(res.translated_sql, encoding="utf-8")
     sh_path.chmod(0o755)
     return {
         "asset_id": asset["id"],
@@ -441,6 +441,13 @@ def _migrate_locked(
     for k, v in counts.items():
         if v:
             md.append(f"| {k} | {v} |")
+    md.append("")
+    md.append(
+        "> `ok` means translated with no known issue detected — **not "
+        "execution-verified**. Nothing here parses or runs the generated "
+        "artifacts, so a construct no rule covers is reported clean. Review "
+        "them before running in production."
+    )
     if report["stale_artifacts"]:
         md.extend(["", "## Stale artifacts from an earlier run", ""])
         md.extend(f"- {_inline_code(path)}" for path in report["stale_artifacts"])
