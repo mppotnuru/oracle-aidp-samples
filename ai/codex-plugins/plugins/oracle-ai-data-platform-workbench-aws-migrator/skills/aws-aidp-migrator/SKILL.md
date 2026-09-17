@@ -56,9 +56,15 @@ Fixture mode (no AWS): `aws-aidp inventory --fixture demo -o inv.json`.
 
 ## Coverage today (be honest about it)
 
-- ✅ S3, Glue Data Catalog, Athena SQL, Glue ETL/PySpark scripts — working.
+- ✅ Athena SQL → Spark SQL, and Glue ETL → PySpark — translated to reviewable
+  artifacts on disk.
+- ✅ S3 buckets → a generated `rclone` transfer job. Review it before running;
+  the tool never moves data itself.
+- 🚧 Glue **Data Catalog** (databases, tables) — inventoried and planned, but no
+  DDL is emitted yet, so `verify` reports every catalog asset as SKIP.
 - 🚧 EMR, SageMaker translators — stubs (roadmap). `verify` reports them as SKIP.
-- 🚧 Live AIDP write-side — demo/offline only today.
+- 🚧 Live AIDP write-side — nothing is written to AIDP. Applying the artifacts is
+  manual today.
 
 See `references/verbs.md` for flags, and the plugin README
 (`${CLAUDE_PLUGIN_ROOT}/README.md`) for the full rule tables.
