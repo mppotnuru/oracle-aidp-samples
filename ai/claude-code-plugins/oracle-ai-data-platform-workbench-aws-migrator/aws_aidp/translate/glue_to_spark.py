@@ -2380,10 +2380,30 @@ def _rule_flag_job_bookmark(text: str, findings: list[Finding], ns: str) -> str:
     return text
 
 
+# Methods that exist on GlueContext and nowhere on SparkSession. The translator
+# rewrites the GlueContext receiver to a SparkSession, so any of these left in the
+# output resolve against SparkSession at runtime and raise AttributeError on the
+# job's first executable line -- while a status-only verdict still reads PASS.
+# Previously only getSource/getSink/create_data_frame were listed, so streaming,
+# purge, transition and transaction jobs translated to a silent PASS.
+_GLUECONTEXT_ONLY_METHODS = (
+    "getSource", "getSink", "getSourceWithFormat", "getSinkWithFormat",
+    "getSampleStreamingDynamicFrame",
+    "create_data_frame", "create_data_frame_from_catalog",
+    "create_data_frame_from_options",
+    "forEachBatch",
+    "purge_table", "purge_s3_path",
+    "transition_table", "transition_s3_path",
+    "start_transaction", "commit_transaction", "cancel_transaction",
+    "extract_jdbc_conf", "write_from_options", "add_ingestion_time_columns",
+)
+
 _RESIDUAL_GLUE_API_PATTERN = re.compile(
     r"\b(?:awsglue|GlueContext|DynamicFrame|Job)\b|"
     r"\.(?:create|write)_dynamic_frame(?:_from_\w+)?\b|"
-    r"\.(?:getSource|getSink|create_data_frame)\s*\(|"
+    # longest-first so create_data_frame does not shadow its _from_* variants
+    r"\.(?:" + "|".join(sorted(_GLUECONTEXT_ONLY_METHODS, key=len, reverse=True))
+    + r")\s*\(|"
     r"getResolvedOptions\s*\("
 )
 

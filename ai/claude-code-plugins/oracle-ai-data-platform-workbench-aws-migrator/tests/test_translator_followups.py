@@ -136,10 +136,18 @@ def test_gluecontext_spark_session_alias_still_rewrites():
 
 def test_teardown_tracks_failures_and_exits_non_zero():
     """TESTING.md tells testers to run live_teardown.py so nothing billable is
-    left behind, so a swallowed AccessDenied must not read as a clean teardown."""
+    left behind, so a swallowed AccessDenied must not read as a clean teardown.
+
+    The live_* scripts are deliberately not shipped in the published plugin
+    tree, so skip rather than fail when this runs from that tree.
+    """
     import pathlib
-    source = (pathlib.Path(__file__).resolve().parent.parent
-              / "scripts" / "live_teardown.py").read_text()
+    import unittest
+    script = (pathlib.Path(__file__).resolve().parent.parent
+              / "scripts" / "live_teardown.py")
+    if not script.exists():
+        raise unittest.SkipTest("live_teardown.py is not shipped in this tree")
+    source = script.read_text()
     assert "FAILURES" in source
     assert "TEARDOWN INCOMPLETE" in source
     assert "return 1" in source

@@ -30,7 +30,6 @@ aws-aidp verify    migrated/            # classify outcome: PASS / REVIEW / SKIP
 ```bash
 git clone https://github.com/oracle-samples/oracle-aidp-samples.git
 cd oracle-aidp-samples/ai/claude-code-plugins/oracle-ai-data-platform-workbench-aws-migrator
-cd aws-aidp-migrator
 pip install -e .
 ./demo.sh                               # 5-minute end-to-end demo
 ```
@@ -49,13 +48,15 @@ The repo doubles as a Claude Code plugin (skill + slash commands wrapping the CL
 /plugin install oracle-ai-data-platform-workbench-aws-migrator
 ```
 
-Then drive it with `/aws-aidp-migrator:inventory`, `:plan`, `:migrate`, `:verify`, or
+Then drive it with `/oracle-ai-data-platform-workbench-aws-migrator:inventory`, `:plan`,
+`:migrate`, `:verify`, or
 just ask in natural language — the `aws-aidp-migrator` skill routes the workflow.
 The `aws-aidp` CLI must be pip-installed (`pip install -e .`) so the plugin can call it.
 
-> **Codex / Cursor / any MCP client:** OpenAI's CLI has no plugin marketplace, so the
-> same four verbs are exposed as an **MCP server** (`pip install -e '.[mcp]'` → `aws-aidp-mcp`).
-> Setup for Codex/Cursor/Claude Desktop: [`docs/MCP.md`](docs/MCP.md). *(MCP server needs Python 3.10+.)*
+> **Codex / Cursor / any MCP client:** the same four verbs are exposed as an
+> **MCP server** (`pip install -e '.[mcp]'` → `aws-aidp-mcp`), so any MCP client can
+> drive them. Codex users can also install this plugin from the Codex marketplace in
+> this repository. *(The MCP server needs Python 3.10+.)*
 
 ## Testing
 
@@ -198,7 +199,6 @@ aws_aidp/
   translate/           # source-side dialect translators
   fixtures/            # bundled demo manifest + builder
 demo.sh                # end-to-end demo script
-DEMO.md                # demo arc + Q&A prep
 ```
 
 ## Roadmap

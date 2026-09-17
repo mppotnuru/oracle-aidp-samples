@@ -12,7 +12,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from aws_aidp.translate.spark_builtins import SPARK_BUILTINS, SPARK_VERSION
+from aws_aidp.translate.spark_builtins import (
+    SPARK_BUILTINS,
+    SPARK_KEYWORDS,
+    SPARK_VERSION,
+)
 from typing import Iterable
 
 
@@ -278,7 +282,12 @@ def _rule_date_format(sql: str, findings: list[Finding]) -> str:
             ))
             continue
         if translated != fmt:
-            escaped = translated.replace("'", "''")
+            # Escape for Spark, not for Trino.  Doubling the quote produces
+            # 'yyyy-MM-dd''T''HH', which Spark reads as three adjacent
+            # literals and then rejects with "Unknown pattern letter: T".
+            # Backslash escaping is what Spark's default parser expects
+            # (verified on 3.5.9: 'yyyy-MM-dd\'T\'HH' -> 2024-01-03T10:20:30).
+            escaped = translated.replace("\\", "\\\\").replace("'", "\\'")
             replacements.append((spans[1][0], spans[1][1], f"'{escaped}'"))
             findings.append(Finding(
                 rule="date_format",
@@ -972,8 +981,36 @@ _UNSUPPORTED_PATTERNS = [
     ),
     (
         "day_of_week",
-        re.compile(r"\b(?:day_of_week|dow)\s*\(", re.IGNORECASE),
-        "Athena day_of_week/dow is ISO (Monday=1) but Spark dayofweek is Sunday=1; use weekday()+1",
+        # Three spellings of one gap.  The EXTRACT form is standard SQL and was
+        # the silent one: Spark accepts it and returns a different number
+        # (measured 4 where Athena returns 3), so it never surfaced.
+        re.compile(
+            r"\b(?:day_of_week|dow)\s*\(|"
+            r"\bEXTRACT\s*\(\s*(?:DOW|DAY_OF_WEEK)\s+FROM\b",
+            re.IGNORECASE,
+        ),
+        "Athena day_of_week/dow/EXTRACT(DOW) is ISO (Monday=1) but Spark is "
+        "Sunday=1; use weekday()+1",
+    ),
+    (
+        "greatest_least_null_semantics",
+        re.compile(r"\b(?:greatest|least)\s*\(", re.IGNORECASE),
+        "Athena greatest/least return NULL if any argument is NULL; Spark skips "
+        "NULLs (measured: greatest(1, NULL) is 1 on Spark, NULL on Athena)",
+    ),
+    (
+        "array_constructor",
+        # Spark has no ARRAY[...] constructor and no array(...)/map(...)/row(...)
+        # type syntax; all of these are ParseExceptions on 3.5.9.
+        re.compile(
+            r"\bARRAY\s*\[|"
+            r"\bAS\s+(?:ARRAY|MAP|ROW)\s*\(|"
+            r"\b(?:array|map|row)\s*\(\s*(?:varchar|bigint|integer|double|boolean|"
+            r"timestamp|date|real|smallint|tinyint|decimal|char)\b",
+            re.IGNORECASE,
+        ),
+        "Presto collection syntax has no Spark equivalent; use array(...), "
+        "map_from_arrays(...) and STRUCT<...> types",
     ),
 ]
 
@@ -1224,6 +1261,116 @@ _RULES = [
 ]
 
 
+# ----- Athena string literals mean something else in Spark -----------------
+
+_SINGLE_QUOTED = re.compile(r"'(?:[^']|'')*'")
+
+
+def _rule_string_literal_escaping(sql: str, findings: list[Finding]) -> str:
+    """Flag literals whose text changes meaning under Spark's parser.
+
+    Athena escapes a quote by doubling it and treats a backslash as ordinary
+    text.  Spark does neither: it reads ``'it''s'`` as two adjacent literals
+    and concatenates them to ``its``, and it expands ``\\n`` to a newline.
+    Both are silent -- the query runs and returns different data.  Measured on
+    3.5.9: ``SELECT 'it''s'`` returns ``its``.
+
+    Flagged rather than rewritten.  The correct Spark spelling is ``'it\\'s'``,
+    but every other rule in this module locates literals with the doubled-quote
+    convention, so rewriting here would change the text those rules are still
+    scanning.  Centralising literal handling first is the prerequisite for a
+    safe rewrite.
+    """
+    # Literals inside a regex call are the escape hazard that
+    # _rule_regex_escape_sequences and _rule_split_semantics already report.
+    # One construct must produce one finding, so skip them here.
+    regex_spans: list[tuple[int, int]] = []
+    for name in ("regexp_replace", "regexp_extract", "regexp_extract_all",
+                 "regexp_like", "regexp_split", "split"):
+        for call, close in _function_calls(sql, name):
+            if close is not None:
+                regex_spans.append((call.start(), close))
+
+    def inside_regex_call(position: int) -> bool:
+        return any(start <= position <= end for start, end in regex_spans)
+
+    doubled = 0
+    backslash = 0
+    for match in _SINGLE_QUOTED.finditer(sql):
+        body = match.group(0)[1:-1]
+        if "''" in body:
+            doubled += 1
+        if "\\" in body and not inside_regex_call(match.start()):
+            backslash += 1
+    if doubled:
+        findings.append(Finding(
+            rule="string_literal_escaping",
+            detail=(f"{doubled} string literal(s) escape a quote by doubling it; "
+                    "Spark concatenates instead and silently drops the quote "
+                    r"-- use \' escaping"),
+            severity="flag",
+        ))
+    if backslash:
+        findings.append(Finding(
+            rule="string_literal_escaping",
+            detail=(f"{backslash} string literal(s) contain a backslash; Athena "
+                    "keeps it literally, Spark expands it as an escape sequence"),
+            severity="flag",
+        ))
+    return sql
+
+
+# ----- integer division truncates on Athena, not on Spark ------------------
+
+_INTEGER_LITERAL = re.compile(r"(?<![\w.])\d+(?![\w.])")
+# Aggregates whose result type is integral on both engines.
+_INTEGER_FUNCTIONS = r"count|cardinality|size|length|char_length|instr|position|year|month|day|hour|minute|second"
+_INTEGER_CALL_END = re.compile(rf"\b(?:{_INTEGER_FUNCTIONS})\s*\([^()]*\)\s*$", re.IGNORECASE)
+_INTEGER_CALL_START = re.compile(rf"^\s*(?:{_INTEGER_FUNCTIONS})\s*\(", re.IGNORECASE)
+
+
+def _rule_integer_division(sql: str, findings: list[Finding]) -> str:
+    """Flag a division whose operands are provably integers on both engines.
+
+    Athena truncates (``7/2`` is 3); Spark returns a double (3.5).  Nothing
+    fails, so the drift is invisible -- and a ratio of counts is routine
+    analytics.
+
+    Deliberately conservative: a bare ``a/b`` is left alone because operand
+    types need a catalog this tool does not have at translation time, and
+    flagging every ``/`` would bury the review queue.
+    """
+    mask = _masked_sql(sql)
+    hits = 0
+    for index, char in enumerate(mask):
+        if char != "/" or mask[index - 1:index] == "/" or mask[index + 1:index + 2] == "/":
+            continue
+        left = mask[:index].rstrip()
+        right = mask[index + 1:].lstrip()
+        left_int = bool(_INTEGER_LITERAL.search(left[-20:]) and
+                        re.search(r"\d\s*$", left)) or bool(_INTEGER_CALL_END.search(left))
+        right_int = bool(re.match(r"\d+(?![\w.])", right)) or bool(_INTEGER_CALL_START.match(right))
+        if left_int and right_int:
+            hits += 1
+    if hits:
+        findings.append(Finding(
+            rule="integer_division",
+            detail=(f"{hits} division(s) with integer operands; Athena truncates "
+                    "to an integer, Spark returns a double (7/2 is 3 on Athena, "
+                    "3.5 on Spark) -- cast or use div() to keep the old result"),
+            severity="flag",
+        ))
+    return sql
+
+
+# Registered out of line because both are defined after the table above.
+# The literal rule must run FIRST, while the literals are still Athena's: once
+# _rule_date_format has emitted its own \' escaping, a later pass would read
+# that backslash as source text and flag it.  Neither rule rewrites anything.
+_RULES.insert(0, _rule_string_literal_escaping)
+_RULES.append(_rule_integer_division)
+
+
 # ---------------------------------------------------------------------------
 # Output validation gates
 #
@@ -1302,20 +1449,22 @@ _TABLE_NAME_PARENS = re.compile(
 # they never appear in SHOW FUNCTIONS.
 _SPARK_SYNTAX_FUNCTIONS = frozenset({"try_cast"})
 
-# Reserved words that can legally be followed by "(" without being a call.
-# Only words absent from SPARK_BUILTINS need listing; `if`, `case`, `in`,
-# `array`, `map`, `struct`, `cast`, `filter` and friends are real builtins.
-# `row` is deliberately NOT excluded: Spark has no ROW(...) constructor, so
-# flagging it is correct.
-_NON_FUNCTION_KEYWORDS = frozenset({
-    "all", "alter", "as", "by", "create", "cross", "distinct", "drop", "from",
-    "full", "group", "having", "inner", "insert", "interval", "into", "is",
-    "join", "lateral", "null", "on", "order", "outer", "partition", "recursive",
-    "returns", "rows", "select", "table", "tablesample", "true", "false",
-    "union", "use", "using", "values", "varchar", "where", "with", "over",
-    # DDL clause keywords that take a parenthesised list
-    "columns", "tblproperties", "options", "serdeproperties", "properties",
-})
+# Presto functions whose names collide with a Spark keyword.  Spark has no
+# `truncate(x, n)` scalar and no `ROW(...)` constructor, so a call spelled that
+# way must still be flagged even though the bare word is reserved.  Kept
+# explicit and tested; the set is bounded by the overlap between Presto's
+# function names and Spark's 326 keywords, which is small.
+_KEYWORD_NAMED_FUNCTIONS = frozenset({"truncate", "row"})
+
+# Words that may legally precede "(" without being a call -- `GROUPING SETS (…)`,
+# `CASE … THEN (…) ELSE (…)`, `CUBE (…)`, `TBLPROPERTIES (…)`.  Sourced from
+# Spark's own lexer vocabulary rather than hand-maintained: guessing this list
+# is how `sets`, `then` and `else` shipped as false "unknown function" flags.
+# `recursive` and `returns` are absent from the Spark 3.5 vocabulary but appear
+# in Athena input, so they are added here.
+_NON_FUNCTION_KEYWORDS = (
+    (SPARK_KEYWORDS | {"recursive", "returns"}) - _KEYWORD_NAMED_FUNCTIONS
+)
 
 # A statement cannot end on a binary operator or conjunction.  Unlike clause
 # adjacency this is decidable without a parser: Spark 3.5 reserves none of its
@@ -1496,7 +1645,12 @@ def _dangling_tail(mask: str) -> str | None:
 
 
 def _leading_keyword(mask: str) -> str | None:
-    stripped = mask.lstrip()
+    # A set operation may parenthesise its operands --
+    # `(SELECT …) UNION ALL (SELECT …)` is valid -- so skip any opening
+    # parentheses before looking for the verb.
+    stripped = mask.lstrip().lstrip("(").lstrip()
+    while stripped.startswith("("):
+        stripped = stripped[1:].lstrip()
     if not stripped:
         return None
     match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", stripped)
@@ -1536,6 +1690,11 @@ def _unknown_functions(mask: str, findings: list[Finding] | None = None) -> list
         # `... AS t(signal)` is a table alias with a column list, not a call.
         prefix = mask[:match.start(1)].rstrip()
         if re.search(r"(?:^|[^A-Za-z0-9_])AS$", prefix, re.IGNORECASE):
+            continue
+        # `AS` is optional: `FROM (VALUES (1)) t(x)` and `UNNEST(arr) u(tag)`
+        # are aliases too.  A call can never directly follow a closing paren --
+        # `f(x) g(y)` is not valid SQL -- so a ")" here means an alias.
+        if prefix.endswith(")"):
             continue
         if findings is not None and _already_reported(name, findings):
             continue
