@@ -1,6 +1,10 @@
 # aws-aidp-migrator
 
-End-to-end migrator for AWS data stack → Oracle AIDP (AI Data Platform).
+Migration assistant for AWS → Oracle AIDP (AI Data Platform). It inventories an
+AWS data stack and translates Athena SQL and Glue ETL to Spark on AIDP, emitting
+reviewable artifacts and flagging anything it cannot convert safely. **Applying
+that output to AIDP is manual today** — the tool writes files locally and does
+not write to your AIDP workspace.
 
 > **Why:** the official Databricks → AIDP plugin handles the other half of customers.
 > Many AIDP migrations originate on the AWS stack — S3, Glue, Athena, EMR,
@@ -110,11 +114,11 @@ dependencies are available.
   is tested offline, but a tenancy should validate it with an authenticated
   `GET <workspace-base>/jobs` before enabling live calls.
 
-## Real AWS (live mode)
+## Real AWS (live inventory)
 
 ```bash
 cp .env.example .env                    # fill AWS_PROFILE, AWS_REGION, OCI_NAMESPACE
-pip install -e '.[oci]'                 # add OCI client (for live AIDP calls)
+pip install -e '.[oci]'                 # add the OCI client (not yet used by any verb)
 aws-aidp inventory --region us-east-1 -o inv.json
 aws-aidp plan inv.json -o plan.json
 aws-aidp migrate plan.json --filter athena --demo -o ./migrated
@@ -129,7 +133,7 @@ AWS credentials: standard boto3 chain (`AWS_PROFILE`, `~/.aws/credentials`, IAM 
 |---|---|---|
 | `inventory` | ✅ all 5 sources | Real AWS via boto3 + fixture mode; Glue job scripts fetched from S3 |
 | `plan` | ✅ all 5 source types | 1:1 mapping to AIDP target types |
-| `migrate` | ✅ Athena → Spark SQL · ✅ Glue ETL → Spark/PySpark | Safe rewrites plus explicit review gates; EMR / SageMaker translators planned |
+| `migrate` | ✅ Athena → Spark SQL · ✅ Glue ETL → Spark/PySpark | Writes translated artifacts locally; **nothing is applied to AIDP**. Safe rewrites plus explicit review gates; EMR / SageMaker translators planned |
 | `verify` | ✅ classifies migrate outcomes | Per-asset PASS / REVIEW / SKIP / FAIL |
 
 > **What PASS means.** PASS = *translated, and no known issue was detected*. It is
@@ -223,4 +227,4 @@ demo.sh                # end-to-end demo script
 - v0.2 — ✅ Glue ETL script translation (DynamicFrame → DataFrame, GlueContext → SparkSession)
 - v0.3 — EMR PySpark notebook translation + AIDP cluster auto-sizing
 - v0.4 — SageMaker training-job → AIDP MLOps experiment mapping
-- v0.5 — live AIDP write-side end-to-end (currently demo-only)
+- v0.5 — live AIDP write-side end-to-end (see Status: demo/offline only today)
