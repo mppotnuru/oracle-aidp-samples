@@ -1,6 +1,6 @@
 ---
 description: Classify a migration's output as PASS / REVIEW / SKIP / FAIL
-argument-hint: <migrated/ or report.json> [--filter athena|glue]
+argument-hint: "<migrated/ or report.json> [--filter s3|glue|athena|emr|sagemaker]"
 allowed-tools: Bash(aws-aidp verify:*), Bash(python3 -m aws_aidp.cli verify:*)
 ---
 

@@ -1,6 +1,6 @@
 ---
 description: Translate a migration plan to AIDP artifacts (Athena→Spark SQL, Glue→PySpark)
-argument-hint: <plan.json> [--demo] [--filter athena|glue] [-o migrated]
+argument-hint: "<plan.json> [--demo] [--filter s3|glue|athena|emr|sagemaker] [-o migrated]"
 allowed-tools: Bash(aws-aidp migrate:*), Bash(python3 -m aws_aidp.cli migrate:*), Read
 ---
 

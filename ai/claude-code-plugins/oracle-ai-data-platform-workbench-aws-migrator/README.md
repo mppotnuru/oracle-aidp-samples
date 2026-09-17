@@ -42,10 +42,24 @@ The demo uses `aws_aidp/fixtures/demo-manifest.json` — a hand-crafted Acme Ins
 
 The repo doubles as a Claude Code plugin (skill + slash commands wrapping the CLI):
 
+**Via Anthropic's community marketplace** (recommended):
+
 ```bash
 # in Claude Code
-/plugin marketplace add oracle-samples/oracle-aidp-samples
+/plugin marketplace add anthropics/claude-plugins-community
 /plugin install oracle-ai-data-platform-workbench-aws-migrator
+```
+
+> Published from this canonical `oracle-samples` location. Anthropic's
+> community-marketplace bot picks up new oracle-samples plugins on a weekly
+> cadence, so this becomes effective roughly a week after merge.
+
+**From a local clone** (before that, or to run un-merged commits):
+
+```bash
+# in Claude Code, from the clone above
+/plugin marketplace add ./oracle-aidp-samples/ai/claude-code-plugins/oracle-ai-data-platform-workbench-aws-migrator
+/plugin install oracle-ai-data-platform-workbench-aws-migrator@aidp-aws-migrator
 ```
 
 Then drive it with `/oracle-ai-data-platform-workbench-aws-migrator:inventory`, `:plan`,
@@ -54,9 +68,12 @@ just ask in natural language — the `aws-aidp-migrator` skill routes the workfl
 The `aws-aidp` CLI must be pip-installed (`pip install -e .`) so the plugin can call it.
 
 > **Codex / Cursor / any MCP client:** the same four verbs are exposed as an
-> **MCP server** (`pip install -e '.[mcp]'` → `aws-aidp-mcp`), so any MCP client can
-> drive them. Codex users can also install this plugin from the Codex marketplace in
-> this repository. *(The MCP server needs Python 3.10+.)*
+> **MCP server** (`aws-aidp-mcp`), so any MCP client can drive them. Run
+> `pip install -e '.[mcp]'` (Python 3.10+) before first use — without it the
+> server exits and the client reports it as failed in `/mcp`, which you will
+> see before you see the explanatory message. A Codex-packaged variant of this
+> plugin is proposed separately in #109; it is not in this repository's Codex
+> marketplace yet.
 
 ## Testing
 

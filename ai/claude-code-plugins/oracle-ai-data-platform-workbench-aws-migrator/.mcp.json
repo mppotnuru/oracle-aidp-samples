@@ -1,9 +1,14 @@
 {
   "mcpServers": {
     "aws-aidp": {
-      "command": "python",
-      "args": ["-m", "aws_aidp.mcp_server"],
-      "env": { "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}" }
+      "command": "python3",
+      "args": [
+        "-m",
+        "aws_aidp.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}"
+      }
     }
   }
 }

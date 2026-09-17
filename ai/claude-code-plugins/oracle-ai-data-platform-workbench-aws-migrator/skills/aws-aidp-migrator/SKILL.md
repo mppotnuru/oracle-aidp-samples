@@ -16,8 +16,13 @@ hand-edit a flagged construct into a silent rewrite.
 The CLI must be installed:
 
 ```bash
-pip install -e .        # from the repo, or: pip install aws-aidp-migrator
+pip install -e .                          # from the plugin directory
+pip install -e "${CLAUDE_PLUGIN_ROOT}"    # or, when installed as a plugin
 ```
+
+There is deliberately no PyPI fallback here: `aws-aidp-migrator` is not a
+published package, and an unregistered name in instructions an agent executes
+is a name-squatting risk rather than a convenience.
 
 Live AWS mode uses the standard boto3 auth chain (`AWS_PROFILE`, `~/.aws/credentials`,
 IAM role). Offline/demo mode needs no AWS account.
@@ -55,4 +60,5 @@ Fixture mode (no AWS): `aws-aidp inventory --fixture demo -o inv.json`.
 - 🚧 EMR, SageMaker translators — stubs (roadmap). `verify` reports them as SKIP.
 - 🚧 Live AIDP write-side — demo/offline only today.
 
-See `references/verbs.md` for flags and `README.md` for the full rule tables.
+See `references/verbs.md` for flags, and the plugin README
+(`${CLAUDE_PLUGIN_ROOT}/README.md`) for the full rule tables.
