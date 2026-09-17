@@ -30,7 +30,6 @@ aws-aidp verify    migrated/            # classify outcome: PASS / REVIEW / SKIP
 ```bash
 git clone https://github.com/oracle-samples/oracle-aidp-samples.git
 cd oracle-aidp-samples/ai/claude-code-plugins/oracle-ai-data-platform-workbench-aws-migrator
-cd aws-aidp-migrator
 pip install -e .
 ./demo.sh                               # 5-minute end-to-end demo
 ```
@@ -44,13 +43,14 @@ The demo uses `aws_aidp/fixtures/demo-manifest.json` — a hand-crafted Acme Ins
 The repo doubles as a Claude Code plugin (skill + slash commands wrapping the CLI):
 
 ```bash
-# in Claude Code
-/plugin marketplace add oracle-samples/oracle-aidp-samples
-/plugin install oracle-ai-data-platform-workbench-aws-migrator
+# in Claude Code (from the clone above)
+/plugin marketplace add ./oracle-aidp-samples/ai/claude-code-plugins/oracle-ai-data-platform-workbench-aws-migrator
+/plugin install oracle-ai-data-platform-workbench-aws-migrator@aidp-aws-migrator
 ```
 
-Then drive it with `/aws-aidp-migrator:inventory`, `:plan`, `:migrate`, `:verify`, or
-just ask in natural language — the `aws-aidp-migrator` skill routes the workflow.
+Then drive it with `/oracle-ai-data-platform-workbench-aws-migrator:inventory`, `:plan`,
+`:migrate`, `:verify`, or just ask in natural language — the `aws-aidp-migrator` skill
+routes the workflow.
 The `aws-aidp` CLI must be pip-installed (`pip install -e .`) so the plugin can call it.
 
 > **Codex / Cursor / any MCP client:** OpenAI's CLI has no plugin marketplace, so the

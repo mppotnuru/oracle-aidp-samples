@@ -1,5 +1,5 @@
 {
-  "name": "aws-aidp-migrator",
+  "name": "aidp-aws-migrator",
   "owner": {
     "name": "Mounika Potnuru",
     "url": "https://github.com/mppotnuru"
@@ -7,7 +7,7 @@
   "description": "AWS → Oracle AIDP migration tooling.",
   "plugins": [
     {
-      "name": "aws-aidp-migrator",
+      "name": "oracle-ai-data-platform-workbench-aws-migrator",
       "source": ".",
       "displayName": "AWS → Oracle AIDP Migrator",
       "description": "Migrate an AWS data stack (S3/Glue/Athena/EMR/SageMaker) to Oracle AIDP."

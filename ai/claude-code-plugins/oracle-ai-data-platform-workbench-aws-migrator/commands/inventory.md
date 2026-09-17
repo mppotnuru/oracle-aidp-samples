@@ -1,6 +1,6 @@
 ---
 description: Scan an AWS data stack (read-only) and write an AIDP migration manifest
-argument-hint: [--region us-east-1 | --fixture demo] [--sources s3,glue,athena]
+argument-hint: "[--region us-east-1 | --fixture demo] [--sources s3,glue,athena]"
 allowed-tools: Bash(aws-aidp inventory:*), Bash(python3 -m aws_aidp.cli inventory:*)
 ---
 
