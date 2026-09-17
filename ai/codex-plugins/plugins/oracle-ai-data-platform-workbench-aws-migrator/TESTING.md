@@ -1,4 +1,4 @@
-# Testing guide (for interns)
+# Testing guide
 
 Thanks for helping test **aws-aidp-migrator** — a CLI that migrates an AWS data
 stack (S3 / Glue / Athena / EMR / SageMaker) to Oracle AIDP.
@@ -13,7 +13,6 @@ runs offline against a bundled fixture. Budget ~30–45 min for a full pass.
 ```bash
 git clone https://github.com/oracle-samples/oracle-aidp-samples.git
 cd oracle-aidp-samples/ai/claude-code-plugins/oracle-ai-data-platform-workbench-aws-migrator
-cd aws-aidp-migrator
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
@@ -56,7 +55,9 @@ PYTHONPATH=. python3 scripts/run_stress_tests.py --release
 
 ✅ **Pass** if the commands print their pass totals with no failures.
 
-The CI compatibility matrix covers Python 3.9–3.14 plus a native Windows run.
+The development repository runs a CI matrix over Python 3.9–3.14 plus a native
+Windows job. That workflow is not part of the published plugin, so run the
+commands above locally.
 Optional runtime-contract checks use MCP 1.x and Spark 3.5 / Python 3.11 /
 Java 17. To run them locally:
 
@@ -125,6 +126,11 @@ Good source material: real AWS Glue sample scripts and Athena/Presto docs.
 ## 6. (Optional) Live AWS mode
 
 Only if you have your own throwaway AWS account. See `README.md` → "Real AWS".
+
+> The `scripts/live_*.py` helpers below live in the development repository and are
+> **not** shipped with the published plugin. Skip this section if `scripts/` only
+> contains the test runner.
+
 There's a seeder that creates a tiny test stack:
 
 ```bash

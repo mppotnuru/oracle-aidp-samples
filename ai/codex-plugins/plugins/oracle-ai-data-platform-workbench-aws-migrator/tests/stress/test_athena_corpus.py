@@ -106,10 +106,14 @@ class AthenaCorpusTests(unittest.TestCase):
         self.assertEqual((result.changes, result.flags), (1, 0))
 
     def test_date_format_literal_letters_are_quoted_for_spark(self):
+        # This previously expected Trino-style '' doubling, which Spark reads
+        # as adjacent literals and rejects with "Unknown pattern letter: T".
+        # Backslash escaping is what Spark's parser wants; verified on 3.5.9
+        # that the string below evaluates to 2024-01-03T10:20:30Z.
         result = translate("SELECT date_format(ts, '%Y-%m-%dT%H:%i:%sZ')")
         self.assertEqual(
             result.translated_sql,
-            "SELECT date_format(ts, 'yyyy-MM-dd''T''HH:mm:ss''Z''')",
+            r"SELECT date_format(ts, 'yyyy-MM-dd\'T\'HH:mm:ss\'Z\'')",
         )
         self.assertEqual(result.flags, 0)
 

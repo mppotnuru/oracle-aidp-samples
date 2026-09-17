@@ -50,7 +50,8 @@ class SparkRuntimeTests(unittest.TestCase):
         """
         import re as _re
 
-        from aws_aidp.translate.spark_builtins import SPARK_BUILTINS, SPARK_VERSION
+        from aws_aidp.translate.spark_builtins import (
+            SPARK_BUILTINS, SPARK_KEYWORDS, SPARK_VERSION)
 
         identifier = _re.compile(r"[a-z_][a-z0-9_]*")
         live = {
@@ -75,6 +76,17 @@ class SparkRuntimeTests(unittest.TestCase):
         self.assertEqual(present_but_unlisted, [],
                          "this Spark has functions the list is missing; "
                          "rerun scripts/generate_spark_builtins.py")
+
+        # The keyword list guards against false "unknown function" flags on
+        # `GROUPING SETS (…)`, `CASE … THEN (…)` and friends, so it has to
+        # track the engine too.
+        from scripts.generate_spark_builtins import collect_keywords
+
+        self.assertEqual(
+            SPARK_KEYWORDS, frozenset(collect_keywords(self.spark)),
+            "spark_builtins.py keyword list is stale; "
+            "rerun scripts/generate_spark_builtins.py",
+        )
 
     def test_presto_only_syntax_is_genuinely_unparseable_by_spark(self):
         """Everything gate C rejects must actually fail Spark's parser.
@@ -133,6 +145,53 @@ class SparkRuntimeTests(unittest.TestCase):
                 for name in flagged:
                     self.assertNotIn(name, live,
                                      f"{name} exists in Spark; gate D is over-flagging")
+
+    def test_date_format_with_literal_letters_executes(self):
+        """A translated format with literal letters must actually run.
+
+        The previous Trino-style '' escaping parsed but died at evaluation
+        with "Unknown pattern letter: T", and the shipped test asserted that
+        broken string, so nothing caught it.  This executes the output.
+        """
+        self.spark.sql(
+            "CREATE OR REPLACE TEMP VIEW fmt_t AS "
+            "SELECT timestamp'2024-01-03 10:20:30' AS ts"
+        )
+        for source, expected in [
+            ("SELECT date_format(ts, '%Y-%m-%dT%H:%i:%sZ') FROM fmt_t",
+             "2024-01-03T10:20:30Z"),
+            ("SELECT date_format(ts, 'Day %d of %M') FROM fmt_t",
+             "Day 03 of January"),
+            ("SELECT date_format(ts, '%Y-%m-%d') FROM fmt_t",
+             "2024-01-03"),
+        ]:
+            result = translate(source)
+            with self.subTest(source=source):
+                self.assertEqual(result.flags, 0)
+                self.assertEqual(
+                    self.spark.sql(result.translated_sql).collect()[0][0], expected)
+
+    def test_flagged_semantic_gaps_really_do_differ_on_spark(self):
+        """The new flags must describe a real difference, not a guess."""
+        self.spark.sql(
+            "CREATE OR REPLACE TEMP VIEW gap_t AS SELECT 7 AS a, 2 AS b, "
+            "date'2024-01-03' AS d")
+        # greatest: Spark skips NULLs, Athena propagates them
+        self.assertEqual(self.spark.sql("SELECT greatest(1, NULL)").collect()[0][0], 1)
+        # integer division: Spark returns a double, Athena truncates to 3
+        self.assertEqual(self.spark.sql("SELECT 7/2").collect()[0][0], 3.5)
+        # EXTRACT(DOW): Spark counts from Sunday, Athena (ISO) from Monday
+        self.assertEqual(
+            self.spark.sql("SELECT EXTRACT(DOW FROM date'2024-01-03')").collect()[0][0], 4)
+        # doubled quote: Spark concatenates and drops the apostrophe
+        self.assertEqual(self.spark.sql("SELECT 'it''s'").collect()[0][0], "its")
+        # and each of those inputs is flagged by the translator
+        for sql in ("SELECT greatest(1, NULL) FROM gap_t",
+                    "SELECT 7/2 FROM gap_t",
+                    "SELECT EXTRACT(DOW FROM d) FROM gap_t",
+                    "SELECT 'it''s' FROM gap_t"):
+            with self.subTest(sql=sql):
+                self.assertTrue(translate(sql).flags)
 
     def test_glue_catalog_identifier_with_hyphens_parses_per_part(self):
         source = (

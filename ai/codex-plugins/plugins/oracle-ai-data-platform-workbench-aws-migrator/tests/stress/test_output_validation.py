@@ -160,6 +160,19 @@ class StatementShapeGateTests(unittest.TestCase):
         self.assertNotIn("statement_not_recognized", found)
         self.assertNotIn("statement_unbalanced", found)
 
+    def test_parenthesised_query_is_recognised(self):
+        """A set operation may parenthesise its operands.
+
+        Valid on Spark 3.5.9, but the leading-token check found no word
+        before the "(" and reported the statement unrecognised.
+        """
+        for sql in ("(SELECT a FROM t) UNION ALL (SELECT a FROM u)",
+                    "(SELECT a FROM t) UNION (SELECT a FROM u)",
+                    "((SELECT a FROM t))",
+                    "  ( SELECT a FROM t ) EXCEPT ( SELECT a FROM u )"):
+            with self.subTest(sql=sql):
+                self.assertNotIn("statement_not_recognized", flags(sql))
+
     def test_leading_comment_before_select_is_not_flagged(self):
         found = flags("-- a comment\n/* another */\nSELECT 1")
         self.assertNotIn("statement_not_recognized", found)
@@ -287,6 +300,29 @@ class UnknownFunctionGateTests(unittest.TestCase):
     def test_insert_column_list_is_not_mistaken_for_a_call(self):
         for sql in ("INSERT INTO target (id) SELECT 1",
                     "INSERT INTO warehouse.target (id, name) SELECT 1, 'x'"):
+            with self.subTest(sql=sql):
+                self.assertNotIn("unknown_function", flags(sql))
+
+    def test_sql_keywords_followed_by_a_paren_are_not_calls(self):
+        """Keywords may legally precede "(" without being function calls.
+
+        All valid on Spark 3.5.9.  Reported from review: GROUPING SETS and
+        CASE were clean before the gates were added, so these are
+        regressions the gate introduced.
+        """
+        for sql in ("SELECT a, b FROM t GROUP BY GROUPING SETS ((a), (b))",
+                    "SELECT CASE WHEN x > 0 THEN (a) ELSE (b) END FROM t",
+                    "SELECT a FROM t GROUP BY CUBE (a, b)",
+                    "SELECT a FROM t GROUP BY ROLLUP (a, b)",
+                    "SELECT s FROM t WHERE s LIKE 'a!_b' ESCAPE '!'"):
+            with self.subTest(sql=sql):
+                self.assertNotIn("unknown_function", flags(sql))
+
+    def test_table_alias_without_as_is_not_mistaken_for_a_call(self):
+        """`AS` is optional before an alias with a column list."""
+        for sql in ("SELECT x FROM (VALUES (1)) t(x)",
+                    "SELECT tag FROM claims CROSS JOIN UNNEST(arr) u(tag)",
+                    "SELECT x FROM (SELECT 1 AS x) sub(x)"):
             with self.subTest(sql=sql):
                 self.assertNotIn("unknown_function", flags(sql))
 
