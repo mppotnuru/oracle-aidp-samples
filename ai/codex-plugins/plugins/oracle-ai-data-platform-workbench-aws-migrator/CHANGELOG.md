@@ -29,7 +29,7 @@ All notable changes to this project are documented here. Format loosely follows
   vocabulary, produced by `scripts/generate_spark_builtins.py` and held to the
   live engine by CI. Hand-maintaining these lists produced both false PASSes and
   false flags.
-- Offline stress suite grown to **343 tests**, including Spark 3.5 runtime checks
+- Offline stress suite grown to **369 tests**, including Spark 3.5 runtime checks
   that execute translated output, plugin frontmatter validation, and verdict
   wording checks.
 

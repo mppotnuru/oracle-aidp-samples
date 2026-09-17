@@ -22,7 +22,7 @@ aws-aidp plan <inv.json> [-o plan.json] [--namespace <oci-namespace>]
 
 ## migrate — translate a plan
 ```
-aws-aidp migrate <plan.json> [--demo] [--filter athena|glue|sagemaker] [-o migrated]
+aws-aidp migrate <plan.json> [--demo] [--filter s3|glue|athena|emr|sagemaker] [-o migrated]
 ```
 - `--demo` — offline: write artifacts + `report.md`/`report.json`, no AIDP calls.
   (Use this by default; the live write-side is roadmap v0.5.)
