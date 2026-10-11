@@ -1,0 +1,56 @@
+{
+  "workspace_id":   "ocid1.disworkspace.oc1.iad.demo000000000000000000000000000000000000000000000000000000000",
+  "workspace_name": "acme_etl_prod",
+  "compartment_id": "ocid1.compartment.oc1..demo0000000000000000000000000000000000000000000000000000000000000",
+  "customer_persona": "Acme Insurance (fixture — no real data)",
+  "scanned_at":       "2026-10-10T09:00:00Z",
+  "sources_scanned":  ["projects","folders","data_flows","pipelines","tasks","connections","data_assets"],
+
+  "projects": [
+    {"key": "proj-01-finance", "name": "finance_etl",   "identifier": "FINANCE_ETL",   "model_type": "USER_PROJECT", "model_version": "20200901"},
+    {"key": "proj-02-claims",  "name": "claims_etl",    "identifier": "CLAIMS_ETL",    "model_type": "USER_PROJECT", "model_version": "20200901"},
+    {"key": "proj-03-crm",     "name": "crm_sync",      "identifier": "CRM_SYNC",      "model_type": "USER_PROJECT", "model_version": "20200901"}
+  ],
+
+  "folders": [
+    {"key": "fold-01-bronze", "name": "bronze_landing", "identifier": "BRONZE_LANDING", "parent_key": "proj-01-finance", "model_type": "FOLDER", "model_version": "20200901"},
+    {"key": "fold-02-silver", "name": "silver_curated", "identifier": "SILVER_CURATED", "parent_key": "proj-01-finance", "model_type": "FOLDER", "model_version": "20200901"},
+    {"key": "fold-03-claims", "name": "claims_daily",   "identifier": "CLAIMS_DAILY",   "parent_key": "proj-02-claims",  "model_type": "FOLDER", "model_version": "20200901"}
+  ],
+
+  "data_flows": [
+    {"key": "df-01-gl-load",         "name": "gl_bronze_load",      "identifier": "GL_BRONZE_LOAD",      "parent_key": "fold-01-bronze", "model_type": "DATA_FLOW", "model_version": "20200901", "description": "Load GL extracts from Object Storage into bronze Delta"},
+    {"key": "df-02-ap-join",         "name": "ap_vendor_enrich",    "identifier": "AP_VENDOR_ENRICH",    "parent_key": "fold-02-silver", "model_type": "DATA_FLOW", "model_version": "20200901", "description": "Join AP invoices with vendor master; filter voids"},
+    {"key": "df-03-claims-dedupe",   "name": "claims_dedupe",       "identifier": "CLAIMS_DEDUPE",       "parent_key": "fold-03-claims", "model_type": "DATA_FLOW", "model_version": "20200901", "description": "Dedupe claims by claim_id + policy_num"},
+    {"key": "df-04-claims-aggregate","name": "claims_daily_agg",    "identifier": "CLAIMS_DAILY_AGG",    "parent_key": "fold-03-claims", "model_type": "DATA_FLOW", "model_version": "20200901", "description": "Daily rollup: count + total paid by line of business"},
+    {"key": "df-05-crm-upsert",      "name": "crm_contact_upsert",  "identifier": "CRM_CONTACT_UPSERT",  "parent_key": "proj-03-crm",    "model_type": "DATA_FLOW", "model_version": "20200901", "description": "Upsert CRM contacts into customer master (SCD2)"}
+  ],
+
+  "pipelines": [
+    {"key": "pipe-01-gl-nightly", "name": "gl_nightly_pipeline", "identifier": "GL_NIGHTLY_PIPELINE", "parent_key": "proj-01-finance", "model_type": "PIPELINE", "model_version": "20200901", "description": "Nightly GL ingest + silver build"},
+    {"key": "pipe-02-claims-daily","name":"claims_daily_pipeline","identifier":"CLAIMS_DAILY_PIPELINE","parent_key": "proj-02-claims",  "model_type": "PIPELINE", "model_version": "20200901", "description": "Daily claims dedupe + aggregate"}
+  ],
+
+  "tasks": [
+    {"key": "task-01-gl-load",      "name": "run_gl_bronze_load",   "identifier": "RUN_GL_BRONZE_LOAD",   "parent_key": "proj-01-finance", "model_type": "INTEGRATION_TASK", "model_version": "20200901"},
+    {"key": "task-02-ap-join",      "name": "run_ap_vendor_enrich", "identifier": "RUN_AP_VENDOR_ENRICH", "parent_key": "proj-01-finance", "model_type": "INTEGRATION_TASK", "model_version": "20200901"},
+    {"key": "task-03-claims-dedupe","name":"run_claims_dedupe",     "identifier": "RUN_CLAIMS_DEDUPE",    "parent_key": "proj-02-claims",  "model_type": "INTEGRATION_TASK", "model_version": "20200901"},
+    {"key": "task-04-claims-agg",   "name": "run_claims_daily_agg", "identifier": "RUN_CLAIMS_DAILY_AGG", "parent_key": "proj-02-claims",  "model_type": "INTEGRATION_TASK", "model_version": "20200901"},
+    {"key": "task-05-crm-sql",      "name": "crm_housekeeping_sql", "identifier": "CRM_HOUSEKEEPING_SQL", "parent_key": "proj-03-crm",     "model_type": "SQL_TASK",         "model_version": "20200901"},
+    {"key": "task-06-crm-ocifn",    "name": "crm_notify_webhook",   "identifier": "CRM_NOTIFY_WEBHOOK",   "parent_key": "proj-03-crm",     "model_type": "OCI_FUNCTION_TASK","model_version": "20200901"}
+  ],
+
+  "data_assets": [
+    {"key": "asset-01-adw-finance",  "name": "ADW_FINANCE",    "identifier": "ADW_FINANCE",    "model_type": "ORACLE_ADWC_DATA_ASSET", "model_version": "20200901", "description": "Finance Autonomous Data Warehouse (source)"},
+    {"key": "asset-02-adb-claims",   "name": "ADB_CLAIMS",     "identifier": "ADB_CLAIMS",     "model_type": "ORACLE_ATP_DATA_ASSET",  "model_version": "20200901", "description": "Claims Autonomous Transaction DB (source)"},
+    {"key": "asset-03-os-landing",   "name": "OS_LANDING",     "identifier": "OS_LANDING",     "model_type": "OCI_OBJECT_STORAGE_DATA_ASSET", "model_version": "20200901", "description": "Object Storage landing bucket for raw extracts"},
+    {"key": "asset-04-crm-rest",     "name": "CRM_SALESFORCE", "identifier": "CRM_SALESFORCE", "model_type": "GENERIC_REST_DATA_ASSET", "model_version": "20200901", "description": "Salesforce REST source (SOQL)"}
+  ],
+
+  "connections": [
+    {"key": "conn-01-adw-prod",   "name": "adw_finance_prod",   "data_asset_key": "asset-01-adw-finance", "model_type": "ORACLE_ADWC_CONNECTION", "model_version": "20200901"},
+    {"key": "conn-02-adb-prod",   "name": "adb_claims_prod",    "data_asset_key": "asset-02-adb-claims",  "model_type": "ORACLE_ATP_CONNECTION",  "model_version": "20200901"},
+    {"key": "conn-03-os-landing", "name": "os_landing_default", "data_asset_key": "asset-03-os-landing",  "model_type": "OCI_OBJECT_STORAGE_CONNECTION", "model_version": "20200901"},
+    {"key": "conn-04-sf-oauth",   "name": "sf_oauth2_prod",     "data_asset_key": "asset-04-crm-rest",    "model_type": "GENERIC_REST_CONNECTION_OAUTH2","model_version": "20200901"}
+  ]
+}

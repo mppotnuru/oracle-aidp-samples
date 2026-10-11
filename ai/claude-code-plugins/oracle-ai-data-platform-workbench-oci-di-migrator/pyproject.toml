@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oci-di-aidp-migrator"
+dynamic = ["version"]
+description = "OCI Data Integration → Oracle AIDP migrator (projects, data flows, pipelines, tasks, connections, data assets)"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "oci>=2.140",
+    "sqlglot>=25.0.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2,<2; python_version >= '3.10'"]
+llm = ["anthropic>=0.40"]
+
+[project.scripts]
+oci-di-aidp     = "oci_di_aidp.cli:main"
+oci-di-aidp-mcp = "oci_di_aidp.mcp_server:main"
+
+[tool.setuptools.packages.find]
+include = ["oci_di_aidp*"]
+
+[tool.setuptools.package-data]
+"oci_di_aidp.fixtures" = ["*.json"]
+
+[tool.setuptools.dynamic]
+version = { attr = "oci_di_aidp.__version__" }

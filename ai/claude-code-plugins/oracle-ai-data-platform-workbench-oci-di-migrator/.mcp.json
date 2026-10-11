@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "oci-di-aidp": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "oci_di_aidp.mcp_server"
+      ],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}"
+      }
+    }
+  }
+}

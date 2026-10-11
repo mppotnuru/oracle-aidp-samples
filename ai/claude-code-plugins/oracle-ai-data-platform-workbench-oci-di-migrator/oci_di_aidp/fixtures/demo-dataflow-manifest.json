@@ -1,0 +1,81 @@
+{
+  "key":        "df-01-gl-load",
+  "name":       "gl_bronze_load",
+  "identifier": "GL_BRONZE_LOAD",
+  "description": "Fixture: Load GL extracts from Object Storage, filter voids, enrich with vendor master, land as Delta.",
+  "model_type":  "DATA_FLOW",
+  "model_version": "20200901",
+
+  "nodes": [
+    {
+      "key":        "node-src-gl",
+      "model_type": "SOURCE_OPERATOR",
+      "name":       "src_gl_extract",
+      "operator":   {
+        "data_asset_key": "asset-03-os-landing",
+        "connection_key": "conn-03-os-landing",
+        "object":   "finance/gl/extract/*.parquet",
+        "format":   "PARQUET"
+      },
+      "output_ports": ["src_gl_extract.out"]
+    },
+    {
+      "key":        "node-filter-voids",
+      "model_type": "FILTER_OPERATOR",
+      "name":       "filter_voids",
+      "operator":   { "filter_expression": "VOID_FLAG = 'N' AND AMOUNT IS NOT NULL" },
+      "input_ports":  ["src_gl_extract.out"],
+      "output_ports": ["filter_voids.out"]
+    },
+    {
+      "key":        "node-src-vendor",
+      "model_type": "SOURCE_OPERATOR",
+      "name":       "src_vendor_master",
+      "operator":   {
+        "data_asset_key": "asset-01-adw-finance",
+        "connection_key": "conn-01-adw-prod",
+        "schema": "FINANCE",
+        "table":  "VENDOR_MASTER"
+      },
+      "output_ports": ["src_vendor_master.out"]
+    },
+    {
+      "key":        "node-join-vendor",
+      "model_type": "JOIN_OPERATOR",
+      "name":       "join_vendor",
+      "operator":   {
+        "join_type": "LEFT_OUTER",
+        "join_condition": "filter_voids.VENDOR_ID = src_vendor_master.VENDOR_ID"
+      },
+      "input_ports":  ["filter_voids.out", "src_vendor_master.out"],
+      "output_ports": ["join_vendor.out"]
+    },
+    {
+      "key":        "node-agg-by-cc",
+      "model_type": "AGGREGATOR_OPERATOR",
+      "name":       "agg_by_costcenter",
+      "operator":   {
+        "group_by":    ["COST_CENTER", "ACCOUNT"],
+        "aggregates":  [
+          { "alias": "TOTAL_AMOUNT", "expression": "SUM(AMOUNT)" },
+          { "alias": "TXN_COUNT",    "expression": "COUNT(*)" }
+        ]
+      },
+      "input_ports":  ["join_vendor.out"],
+      "output_ports": ["agg_by_costcenter.out"]
+    },
+    {
+      "key":        "node-tgt-bronze",
+      "model_type": "TARGET_OPERATOR",
+      "name":       "tgt_gl_bronze_delta",
+      "operator":   {
+        "data_asset_key": "asset-03-os-landing",
+        "connection_key": "conn-03-os-landing",
+        "object":    "finance/bronze/gl_rollup",
+        "format":    "DELTA",
+        "write_mode": "OVERWRITE"
+      },
+      "input_ports": ["agg_by_costcenter.out"]
+    }
+  ]
+}

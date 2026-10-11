@@ -1,0 +1,16 @@
+{
+  "name": "aidp-oci-di-migrator",
+  "owner": {
+    "name": "Oracle AI Data Platform",
+    "url": "https://github.com/oracle-samples/oracle-aidp-samples"
+  },
+  "description": "OCI Data Integration → Oracle AIDP migration tooling.",
+  "plugins": [
+    {
+      "name": "oracle-ai-data-platform-workbench-oci-di-migrator",
+      "source": "./",
+      "displayName": "OCI-DI → Oracle AIDP Migrator",
+      "description": "Migrate an OCI Data Integration workspace (projects, data flows, pipelines, tasks, connections, data assets) to Oracle AIDP."
+    }
+  ]
+}
